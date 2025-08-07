@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const helmet = require("helmet");
 require("dotenv").config();
-const { check } = require("express-validator");
+const { check, validationResult } = require("express-validator");
 
 const db = new sqlite3.Database("./bank_sample.db");
 
@@ -39,7 +39,8 @@ app.post("/auth", function (request, response) {
   var password = request.body.password;
   if (username && password) {
     db.get(
-      `SELECT * FROM users WHERE username = '${request.body.username}' AND password = '${request.body.password}'`,
+      `SELECT * FROM users WHERE username = ? AND password = ?`,
+      [username, password],
       function (error, results) {
         console.log(error);
         console.log(results);
@@ -134,14 +135,18 @@ app.get("/download", function (request, response) {
 
 app.post("/download", function (request, response) {
   if (request.session.loggedin) {
-    var file_name = request.body.file;
+    const file_name = request.body.file;
+
+    const root_directory = path.join(process.cwd(), "history_files");
+
+    const full_path = path.resolve(root_directory, file_name);
+    if (!full_path.startsWith(root_directory)) {
+      return response.status(400).send("Invalid file path.");
+    }
 
     response.statusCode = 200;
     response.setHeader("Content-Type", "text/html");
 
-    // Change the filePath to current working directory using the "path" method
-    const filePath = "history_files/" + file_name;
-    console.log(filePath);
     try {
       content = fs.readFileSync(filePath, "utf8");
       response.end(content);
@@ -169,44 +174,46 @@ app.get("/public_forum", function (request, response) {
   //response.end();
 });
 
-app.post("/public_forum", function (request, response) {
-  if (request.session.loggedin) {
-    var comment = request.body.comment;
-    var username = request.session.username;
-    if (comment) {
-      db.all(
-        `INSERT INTO public_forum (username,message) VALUES ('${username}','${comment}')`,
-        (err, rows) => {
-          console.log(err);
-        }
-      );
-      db.all(`SELECT username,message FROM public_forum`, (err, rows) => {
-        console.log(rows);
-        console.log(err);
-        response.render("forum", { rows });
-      });
-    } else {
-      db.all(`SELECT username,message FROM public_forum`, (err, rows) => {
-        console.log(rows);
-        console.log(err);
-        response.render("forum", { rows });
-      });
+app.post(
+  "/public_forum",
+  [
+    check("comment")
+      .trim()
+      .blacklist(`<>`)
+      .notEmpty()
+      .withMessage("Comment must not be empty or contain '<' or '>'"),
+  ],
+  function (request, response) {
+    if (!request.session.loggedin) {
+      return response.redirect("/");
     }
-    comment = "";
-  } else {
-    response.redirect("/");
+
+    const errors = validationResult(request);
+    if (!errors.isEmpty()) {
+      return response.status(400).send("Invalid comment submitted.");
+    }
+    const comment = request.body.comment;
+    const username = request.session.username;
+    db.run(`INSERT INTO public_forum (username, message) VALUES (?, ?)`),
+      [username, comment],
+      (err) => {
+        if (err) console.log(err);
+        db.all(`SELECT username, message FROM public_forum`, (err, rows) => {
+          if (err) console.log(err);
+          response.render("forum", { rows });
+        });
+      };
   }
-  comment = "";
-  //response.end();
-});
+);
 
 //SQL UNION INJECTION
 app.get("/public_ledger", function (request, response) {
   if (request.session.loggedin) {
     var id = request.query.id;
-    if (id) {
+    if (!isNaN(id)) {
       db.all(
-        `SELECT * FROM public_ledger WHERE from_account = '${id}'`,
+        `SELECT * FROM public_ledger WHERE from_account = ?`,
+        [id],
         (err, rows) => {
           console.log("PROCESSING INPU");
           console.log(err);
